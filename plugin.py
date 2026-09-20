@@ -192,6 +192,7 @@ class BasePlugin:
     command_sel_devices = ["Quiet_Mode_Level", "Powerful_Mode_Time", "Operating_Mode_State", "Zones_State", "Holiday_Mode_State"]     
     sel_switch_devices = [ "ThreeWay_Valve_State", "Cooling_Mode","Heating_Mode"]       
     watt_devices =["Cool_Energy_Consumption", "Cool_Energy_Production", "DHW_Energy_Consumption", "DHW_Energy_Production", "Heat_Energy_Consumption", "Heat_Energy_Production"]
+    extra_watt_topics = {"Heat_Power_Consumption_Extra": "Heat_Energy_Consumption", "Heat_Power_Production_Extra": "Heat_Energy_Production", "Cool_Power_Consumption_Extra": "Cool_Energy_Consumption", "Cool_Power_Production_Extra": "Cool_Energy_Production", "DHW_Power_Consumption_Extra": "DHW_Energy_Consumption", "DHW_Power_Production_Extra": "DHW_Energy_Production"}
     counter_devices = ["Operations_Counter", "Operations_Hours", "DHW_Heater_Operations_Hours", "Room_Heater_Operations_Hours", "Sterilization_Max_Time", "Pump_Duty", "Defrost_Counter"] 
     speed_devices = ["Pump_Speed", "Fan1_Motor_Speed", "Fan2_Motor_Speed"]   
     pressure_devices = ["Low_Pressure", "High_Pressure"]
@@ -417,7 +418,65 @@ class BasePlugin:
           except Exception as e:
            Domoticz.Debug(str(e))
            return True     
-         
+         #------------------ EXTRA POWER ---------------------------------------
+         # HeishaMon extra data block
+         # extra/Heat_Power_Consumption_Extra
+         # extra/Heat_Power_Production_Extra
+         # extra/Cool_Power_Consumption_Extra
+         # extra/Cool_Power_Production_Extra
+         # extra/DHW_Power_Consumption_Extra
+         # extra/DHW_Power_Production_Extra
+         #-----------------------------------------------------------------------
+
+         if ((mqttpath[0] == self.base_topic) and
+             (mqttpath[1] == 'extra') and
+             (len(mqttpath) >= 3)):
+
+          extra_topic = mqttpath[2]
+
+          if extra_topic in self.extra_watt_topics:
+
+           unitname = self.extra_watt_topics[extra_topic]
+
+           iUnit = getDevice(unitname)
+
+           if iUnit < 0:
+            iUnit = createDevice(unitname, "Watt")
+            if iUnit < 0:
+             return False
+
+           try:
+            curval = Devices[iUnit].sValue
+           except:
+            curval = ""
+
+           try:
+            mval = float(str(message).strip())
+           except:
+            Domoticz.Debug(
+             "Invalid extra power value: " +
+             extra_topic + " = " + str(message)
+            )
+            return False
+
+           try:
+            if str(curval) != str(mval):
+             Devices[iUnit].Update(
+              nValue=0,
+              sValue=str(mval)
+             )
+           except Exception as e:
+            Domoticz.Debug(str(e))
+            return False
+
+           # Recalculate COP using the extra power values
+           try:
+            calcCOP(unitname)
+           except Exception as e:
+            Domoticz.Debug(str(e))
+
+           return True
+              
         #------------------ MAIN ----------------------------------------------
         #---------------------------------------------------------------------
         if ( (mqttpath[0] == self.base_topic) and (mqttpath[1] == 'main') ):
@@ -536,30 +595,35 @@ class BasePlugin:
             
          #------------------ Watt ------------------------------------------------
          #-----------------------------------------------------------------------
-         if ( unitname in self.watt_devices ):
-          try:
-           curval = Devices[iUnit].sValue
-           prevdata = curval.split(";")
-          except:
-           prevdata = []
-          if len(prevdata)==2: ## If device is old, recreate it to a Electric Usage device
-           pUnitname = Devices[iUnit].DeviceID
-           Devices[iUnit].Delete()
-           Domoticz.Device(Name=pUnitname, Unit=iUnit, Type=248, Subtype=1, Used=0, DeviceID=pUnitname).Create()
-          try:
-           mval = float(str(message).strip())
-          except:
-           mval = str(message).strip()
-          try:
-           if (curval != mval):
-            Devices[iUnit].Update(nValue=0,sValue=str(mval))
-          except Exception as e:
-           Domoticz.Debug(str(e))
-           return True     
-          try: 
-           calcCOP(unitname)  
-          except Exception as e:
-           Domoticz.Debug(str(e))                     
+                  #------------------ Watt -----------------------------------------------
+          # Energy values are handled exclusively through the HeishaMon
+          # extra/*_Extra topics. The old main/*_Power_* topics are ignored.
+          #-----------------------------------------------------------------------
+            
+     #   if ( unitname in self.watt_devices ):
+      #    try:
+      #    curval = Devices[iUnit].sValue
+      #   prevdata = curval.split(";")
+      #    except:
+      #     prevdata = []
+      #    if len(prevdata)==2: ## If device is old, recreate it to a Electric Usage device
+      #     pUnitname = Devices[iUnit].DeviceID
+      #     Devices[iUnit].Delete()
+      #     Domoticz.Device(Name=pUnitname, Unit=iUnit, Type=248, Subtype=1, Used=0, DeviceID=pUnitname).Create()
+      #    try:
+      #     mval = float(str(message).strip())
+      #    except:
+      #     mval = str(message).strip()
+      #    try:
+      #     if (curval != mval):
+      #      Devices[iUnit].Update(nValue=0,sValue=str(mval))
+      #    except Exception as e:
+      #     Domoticz.Debug(str(e))
+      #     return True     
+      #    try: 
+      #     calcCOP(unitname)  
+      #    except Exception as e:
+      #     Domoticz.Debug(str(e))                     
 
          # ------------------ Speed | Pressure | Counter |  -----------------------
          # -----------------------------------------------------------------------
