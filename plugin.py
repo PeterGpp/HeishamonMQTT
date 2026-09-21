@@ -1,5 +1,5 @@
 """
-<plugin key="HeishamonMQTT" name="Heishamon MQTT" version="0.2.3">
+<plugin key="HeishamonMQTT" name="Heishamon MQTT" version="0.2.4">
     <description>
         Simple plugin to manage Heishamon through MQTT
         <br/>
@@ -187,6 +187,8 @@ def createDevice(pUnitname, pTypeName, pOptions=''):
             Domoticz.Device(Name=pUnitname, Unit=iUnit, Type=243, Options={"Custom": "1;Hz"}, Subtype=31, Used=0, DeviceID=pUnitname).Create() #
         elif (pTypeName=="Usage"):
             Domoticz.Device(Name=pUnitname, Unit=iUnit, Type=248, Subtype=1, Used=0, DeviceID=pUnitname).Create() # create Usage (instant Watt, no kWh counter)
+        elif (pTypeName=="Power"):
+            Domoticz.Device(Name=pUnitname, Unit=iUnit, Type=243, Subtype=29, Used=0, DeviceID=pUnitname).Create() # create Electric device: instant Watt + accumulated kWh counter
         elif (pTypeName=="selSwitch"):
             lOption = {"Scenes": "|||||", "LevelNames": getSelSwitchLevelNames(pUnitname) , "LevelOffHidden": "false", "SelectorStyle": "0"} #
             Domoticz.Device(Name=pUnitname, Unit=iUnit, Type=244, Subtype=62, Switchtype=18, Options=lOption, Image=getSelSwitchImage(pUnitname), Used=0,DeviceID=pUnitname).Create() # create Selector Switch
@@ -239,6 +241,11 @@ class BasePlugin:
                 if self.powerSource not in ("Extra", "Main"):
                     self.powerSource = "Extra"
                 Domoticz.Debug("Power (Watt) values source: " + self.powerSource)
+                # State used to integrate instantaneous Watt readings into a
+                # running Wh counter for the "Power" devices (HeishaMon only
+                # sends instant Watt values, not a hardware energy counter).
+                self.powerLastUpdate = {}
+                self.powerLastValue = {}
                 self.mqttserveraddress = Parameters["Address"].strip()
                 self.mqttserverport = Parameters["Port"].strip()
                 self.mqttClient = MqttClientSH2(self.mqttserveraddress, self.mqttserverport, "", self.onMQTTConnected, self.onMQTTDisconnected, self.onMQTTPublish, self.onMQTTSubscribed)
@@ -338,20 +345,55 @@ class BasePlugin:
     def updatePowerDevice(self, unitname, message):
         """Shared update logic for the 6 power consumption+production
         devices, used by both the main/... and extra/..._Extra handlers.
-        These are created as a Domoticz "Usage" device (Type 248, Subtype 1):
-        it reports the instantaneous value in Watt directly and has no kWh
-        counter, which matches what HeishaMon actually sends."""
+        HeishaMon only sends an instantaneous Watt value (no hardware energy
+        counter for these), so the plugin itself integrates power over time
+        (trapezoidal: average of the previous and new Watt reading x elapsed
+        hours) into a running Wh total. That running total is sent as the
+        second value to a Domoticz "Power" device (Type 243/Subtype 29,
+        "Electric"), which then builds real kWh/day and kWh/month graphs."""
         iUnit = getDevice(unitname)
         if iUnit<0: # if device does not exists in Domoticz, than create it
-            iUnit = createDevice(unitname, "Usage")
+            iUnit = createDevice(unitname, "Power")
         if iUnit<0:
             return False
+
         try:
             mval = float(str(message).strip())
         except:
-            mval = str(message).strip()
+            # non-numeric payload: nothing to integrate, just log and bail
+            Domoticz.Debug("Non-numeric power value for " + unitname + ": " + str(message))
+            return False
+
+        # Recover the current running Wh total from the device itself, so it
+        # survives plugin restarts instead of resetting to 0.
         try:
-            Devices[iUnit].Update(nValue=0,sValue=str(mval))
+            prevdata = Devices[iUnit].sValue.split(";")
+        except:
+            prevdata = []
+        if len(prevdata)<2:
+            prevdata = ["0","0"]
+        try:
+            total = float(prevdata[1])
+        except:
+            total = 0.0
+
+        now = time.time()
+        lastTime = self.powerLastUpdate.get(unitname)
+        lastValue = self.powerLastValue.get(unitname, mval)
+        if lastTime is not None:
+            elapsedHours = (now - lastTime) / 3600.0
+            # Ignore unrealistic gaps (MQTT/plugin restart, long disconnect)
+            # so we don't add one huge bogus spike to the counter.
+            if 0 < elapsedHours <= 1:
+                avgWatt = (lastValue + mval) / 2.0
+                total += avgWatt * elapsedHours
+
+        self.powerLastUpdate[unitname] = now
+        self.powerLastValue[unitname] = mval
+
+        sval = str(mval)+";"+str(round(total, 3))
+        try:
+            Devices[iUnit].Update(nValue=0,sValue=sval)
         except Exception as e:
             Domoticz.Debug(str(e))
         try:
@@ -466,7 +508,7 @@ class BasePlugin:
                 elif ( unitname in self.command_switch_devices ):
                     iUnit = createDevice(unitname, "Switch")
                 elif ( unitname in self.kWh_devices ):
-                    iUnit = createDevice(unitname, "Usage")
+                    iUnit = createDevice(unitname, "Power")
                 elif ( unitname in self.counter_devices ):
                     iUnit = createDevice(unitname, "Counter")
                 elif ( unitname in self.speed_devices ):
