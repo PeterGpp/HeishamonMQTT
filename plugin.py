@@ -1,5 +1,5 @@
 """
-<plugin key="HeishamonMQTT" name="Heishamon MQTT" version="0.2.2">
+<plugin key="HeishamonMQTT" name="Heishamon MQTT" version="0.2.3">
     <description>
         Simple plugin to manage Heishamon through MQTT
         <br/>
@@ -185,6 +185,8 @@ def createDevice(pUnitname, pTypeName, pOptions=''):
             Domoticz.Device(Name=pUnitname, Unit=iUnit, Type=243, Subtype=23, Used=0, DeviceID=pUnitname).Create() #
         elif (pTypeName=="Freq"):
             Domoticz.Device(Name=pUnitname, Unit=iUnit, Type=243, Options={"Custom": "1;Hz"}, Subtype=31, Used=0, DeviceID=pUnitname).Create() #
+        elif (pTypeName=="Usage"):
+            Domoticz.Device(Name=pUnitname, Unit=iUnit, Type=248, Subtype=1, Used=0, DeviceID=pUnitname).Create() # create Usage (instant Watt, no kWh counter)
         elif (pTypeName=="selSwitch"):
             lOption = {"Scenes": "|||||", "LevelNames": getSelSwitchLevelNames(pUnitname) , "LevelOffHidden": "false", "SelectorStyle": "0"} #
             Domoticz.Device(Name=pUnitname, Unit=iUnit, Type=244, Subtype=62, Switchtype=18, Options=lOption, Image=getSelSwitchImage(pUnitname), Used=0,DeviceID=pUnitname).Create() # create Selector Switch
@@ -334,29 +336,22 @@ class BasePlugin:
         Domoticz.Debug("onMQTTSubscribed")
 
     def updatePowerDevice(self, unitname, message):
-        """Shared update logic for the 6 kWh/Watt consumption+production
-        devices, used by both the main/... and extra/..._Extra handlers."""
+        """Shared update logic for the 6 power consumption+production
+        devices, used by both the main/... and extra/..._Extra handlers.
+        These are created as a Domoticz "Usage" device (Type 248, Subtype 1):
+        it reports the instantaneous value in Watt directly and has no kWh
+        counter, which matches what HeishaMon actually sends."""
         iUnit = getDevice(unitname)
         if iUnit<0: # if device does not exists in Domoticz, than create it
-            iUnit = createDevice(unitname, "kWh")
+            iUnit = createDevice(unitname, "Usage")
         if iUnit<0:
             return False
-        try:
-            curval = Devices[iUnit].sValue
-            prevdata = curval.split(";")
-        except:
-            prevdata = []
-        if len(prevdata)<2:
-            prevdata.append(0)
-            prevdata.append(0)
         try:
             mval = float(str(message).strip())
         except:
             mval = str(message).strip()
-        sval = str(mval)+";"+str(prevdata[1])
         try:
-            if sval!="":
-                Devices[iUnit].Update(nValue=0,sValue=str(sval))
+            Devices[iUnit].Update(nValue=0,sValue=str(mval))
         except Exception as e:
             Domoticz.Debug(str(e))
         try:
@@ -471,7 +466,7 @@ class BasePlugin:
                 elif ( unitname in self.command_switch_devices ):
                     iUnit = createDevice(unitname, "Switch")
                 elif ( unitname in self.kWh_devices ):
-                    iUnit = createDevice(unitname, "kWh")
+                    iUnit = createDevice(unitname, "Usage")
                 elif ( unitname in self.counter_devices ):
                     iUnit = createDevice(unitname, "Counter")
                 elif ( unitname in self.speed_devices ):
